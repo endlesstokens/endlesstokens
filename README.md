@@ -17,6 +17,12 @@ cargo check --all-targets
 cargo test --all-targets
 ```
 
+Run the full local CI task:
+
+```sh
+mise run ci
+```
+
 ## Prior Art
 
 See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for related projects and
