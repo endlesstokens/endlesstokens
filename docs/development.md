@@ -51,6 +51,12 @@ mise run ci
 The `audit` and `security-scan` tasks use ignored caches under `target/`.
 Refreshing those databases requires network access.
 
+## Continuous Integration
+
+GitHub Actions runs `mise run ci` on pull requests and pushes to `main`.
+Dependabot opens weekly grouped updates for GitHub Actions and Cargo
+dependencies.
+
 ## Local Artifacts
 
 Do not commit `target/`, `.anvilkit/`, scanner caches, local databases, real
