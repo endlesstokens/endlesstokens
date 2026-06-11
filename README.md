@@ -4,6 +4,8 @@ Your token usage, forever.
 
 ## Development
 
+See [docs/development.md](docs/development.md) for the full local setup.
+
 Run the initial CLI smoke check:
 
 ```sh
@@ -22,6 +24,12 @@ Run the full local CI task:
 ```sh
 mise run ci
 ```
+
+An example future configuration lives in
+[config.example.toml](config.example.toml).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance and
+[SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## Prior Art
 
