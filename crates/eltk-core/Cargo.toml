@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT
+
+[package]
+name = "eltk-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "EndlessTokens normalized token-usage core."
+
+[dependencies]

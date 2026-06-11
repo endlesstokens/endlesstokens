@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT
+
+[package]
+name = "eltk-collector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "EndlessTokens local transcript collector."
+
+[dependencies]
+eltk-adapters = { path = "../eltk-adapters" }
+eltk-core = { path = "../eltk-core" }
+eltk-store = { path = "../eltk-store" }

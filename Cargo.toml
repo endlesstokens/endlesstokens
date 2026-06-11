@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT
+
+[workspace]
+members = [
+    "crates/eltk",
+    "crates/eltk-adapters",
+    "crates/eltk-collector",
+    "crates/eltk-core",
+    "crates/eltk-reporter",
+    "crates/eltk-server",
+    "crates/eltk-store",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Michael Stutz <michaeljstutz@users.noreply.github.com>"]
+license = "MIT"
+repository = "https://github.com/endlesstokens/endlesstokens"
+readme = "README.md"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
