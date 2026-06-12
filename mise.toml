@@ -38,6 +38,10 @@ run = "cargo llvm-cov --all-targets --locked --summary-only"
 description = "Lint GitHub Actions workflows"
 run = "test ! -d .github/workflows || actionlint"
 
+[tasks.notices]
+description = "Check third-party notices against Cargo.lock"
+run = "bash scripts/check-third-party-notices.sh"
+
 [tasks.audit]
 description = "Scan Rust dependencies for security advisories"
 run = "cargo audit --db target/cargo-audit-db"
@@ -61,6 +65,7 @@ depends = [
     "check",
     "clippy",
     "workflow-lint",
+    "notices",
     "audit",
     "secret-scan",
     "security-scan",

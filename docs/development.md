@@ -42,6 +42,7 @@ mise run ci
 | `test` | Run all Rust tests |
 | `coverage` | Run tests with a coverage summary |
 | `workflow-lint` | Lint GitHub Actions workflows when present |
+| `notices` | Check third-party notices against Cargo.lock |
 | `audit` | Scan Rust dependencies for security advisories |
 | `secret-scan` | Scan committed history for leaked secrets |
 | `security-scan` | Scan the filesystem for high-severity findings |

@@ -1,6 +1,11 @@
 # Third-Party Notices
 
-EndlessTokens does not currently bundle third-party source code.
+EndlessTokens does not currently use third-party Cargo dependencies or bundle
+third-party source code.
+
+## Cargo Dependencies
+
+No third-party Cargo dependencies are currently used.
 
 ## Prior Art And Credits
 
