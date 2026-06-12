@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: MIT
+#
+# EndlessTokens example configuration.
+#
+# The configuration schema is provisional until config loading lands. Do not put
+# API keys, tokens, or other secrets in this file.
+
+[store]
+# Relative paths are resolved from the eventual config directory.
+path = "endlesstokens.db"
+
+[scan]
+# Keep scanner behavior conservative by default.
+include_synthetic = false
+include_api_errors = false
+
+[adapters.claude_code]
+enabled = true
+use_claude_config_dir = true
+transcript_dirs = [
+    "~/.claude/projects",
+    "~/.config/claude/projects",
+]
+
+[adapters.codex]
+enabled = false
+# session_dirs = ["${CODEX_HOME}/sessions"]
+
+[network]
+# Product behavior should not make silent network calls.
+telemetry = false
+update_check = false
+pricing_refresh = "manual"
