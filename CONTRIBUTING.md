@@ -38,7 +38,7 @@ Code transcript handling:
 
 - Count only assistant rows with `message.usage`.
 - Deduplicate by `(agent, message.id, requestId)`.
-- Keep the last row per `requestId` for streamed growth.
+- Keep the largest known token total per `requestId` for streamed growth.
 - Skip synthetic rows and API error messages.
 - Store the canonical `cwd` from each transcript row.
 

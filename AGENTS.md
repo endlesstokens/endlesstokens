@@ -71,7 +71,7 @@ Until the workspace is scaffolded, create matching `mise.toml` tasks before rely
 - Commit subjects follow the Conventional Commit-style format documented in `README.md`.
 - Use a Rust workspace modeled on Hoststamp. Planned crates are `eltk-core`, `eltk-adapters`, `eltk-collector`, `eltk-store`, `eltk-reporter`, `eltk-server`, and `eltk`.
 - Keep the core tool-agnostic; Claude Code is the first adapter, not the architecture.
-- Claude Code dedup keys are `(agent, message.id, requestId)`. For streamed growth, keep the last record per `requestId`. Never key on transcript line `uuid`.
+- Claude Code dedup keys are `(agent, message.id, requestId)`. For streamed growth, keep the record with the largest known token total per `requestId`; use last-wins only as a tie-breaker. Never key on transcript line `uuid`.
 - Store the canonical `cwd` from each transcript line; do not decode it from Claude's project-directory name.
 - No telemetry or silent network calls. Pricing refresh, server push, hosted claims, and update checks are explicit opt-in behavior.
 - User data stays portable: SQLite is inspectable, and `eltk export` / `eltk import` are first-class paths.
