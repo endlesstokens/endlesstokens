@@ -57,7 +57,10 @@ impl ClaudeCodeAdapter {
             return Ok(None);
         };
 
-        if object.get("type").and_then(Value::as_str) != Some("assistant") {
+        let Some(message) = object.get("message").and_then(Value::as_object) else {
+            return Ok(None);
+        };
+        if !is_assistant_usage_row(object, message) {
             return Ok(None);
         }
 
@@ -68,10 +71,6 @@ impl ClaudeCodeAdapter {
         {
             return Ok(None);
         }
-
-        let Some(message) = object.get("message").and_then(Value::as_object) else {
-            return Ok(None);
-        };
         let model = message.get("model").and_then(Value::as_str);
         if model == Some("<synthetic>") {
             return Ok(None);
@@ -268,6 +267,17 @@ impl UsageAdapter for ClaudeCodeAdapter {
         }
 
         Ok(stats)
+    }
+}
+
+fn is_assistant_usage_row(
+    object: &serde_json::Map<String, Value>,
+    message: &serde_json::Map<String, Value>,
+) -> bool {
+    match object.get("type").and_then(Value::as_str) {
+        Some("assistant") => true,
+        Some(_) => false,
+        None => message.get("role").and_then(Value::as_str) == Some("assistant"),
     }
 }
 

@@ -28,9 +28,22 @@ fn discovers_jsonl_sources_from_configured_roots() {
 
     let sources = adapter.discover(&config).unwrap();
 
-    assert_eq!(sources.len(), 1);
-    assert_eq!(sources[0].kind, SourceKind::ClaudeCodeJsonl);
-    assert!(sources[0].path.ends_with("usage-records.jsonl"));
+    assert_eq!(sources.len(), 2);
+    assert!(
+        sources
+            .iter()
+            .all(|source| source.kind == SourceKind::ClaudeCodeJsonl)
+    );
+    assert!(
+        sources
+            .iter()
+            .any(|source| source.path.ends_with("role-only-records.jsonl"))
+    );
+    assert!(
+        sources
+            .iter()
+            .any(|source| source.path.ends_with("usage-records.jsonl"))
+    );
 }
 
 #[test]
@@ -123,4 +136,38 @@ fn keeps_message_only_records_with_weak_identity() {
         record.dedup.stable_key,
         StableUsageKey::ClaudeMessageOnly { .. }
     ));
+}
+
+#[test]
+fn accepts_role_only_assistant_usage_records() {
+    let adapter = ClaudeCodeAdapter::new();
+    let source = UsageSource::new(
+        SourceKind::ClaudeCodeJsonl,
+        fixture_path("role-only-records.jsonl"),
+    );
+    let mut records = Vec::new();
+
+    let stats = adapter.scan_source(&source, &mut records).unwrap();
+
+    assert_eq!(stats.records_seen, 3);
+    assert_eq!(stats.records_emitted, 1);
+    assert_eq!(stats.warnings, 0);
+
+    let record = &records[0];
+    assert_eq!(
+        record.context.session_id.as_deref(),
+        Some("session-role-only")
+    );
+    assert_eq!(
+        record.context.message_id.as_deref(),
+        Some("msg-role-only-1")
+    );
+    assert_eq!(
+        record.context.request_id.as_deref(),
+        Some("req-role-only-1")
+    );
+    assert_eq!(record.usage.tokens.input_tokens, 100);
+    assert_eq!(record.usage.tokens.output_tokens, 50);
+    assert_eq!(record.usage.tokens.cache_creation_input_tokens, 25);
+    assert_eq!(record.usage.tokens.cache_read_input_tokens, 10);
 }
