@@ -4,6 +4,7 @@ use std::{env, path::PathBuf, process};
 
 use eltk_collector::{CollectorScanResult, collect_claude_records};
 use eltk_core::{MeteredUsage, ScanConfig};
+use serde_json::json;
 
 fn main() {
     match run(env::args().skip(1)) {
@@ -36,6 +37,14 @@ enum Command {
 struct ScanOptions {
     roots: Vec<PathBuf>,
     include_excluded: bool,
+    output_format: ScanOutputFormat,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ScanOutputFormat {
+    #[default]
+    Text,
+    Json,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,12 +89,14 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, CliE
 fn parse_scan_args(args: impl IntoIterator<Item = String>) -> Result<Command, CliError> {
     let mut roots = Vec::new();
     let mut include_excluded = false;
+    let mut output_format = ScanOutputFormat::Text;
     let mut args = args.into_iter();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" | "-h" => return Ok(Command::ScanHelp),
             "--include-excluded" => include_excluded = true,
+            "--json" => output_format = ScanOutputFormat::Json,
             "--root" | "-r" => {
                 let Some(root) = args.next() else {
                     return Err(CliError::usage(
@@ -109,6 +120,7 @@ fn parse_scan_args(args: impl IntoIterator<Item = String>) -> Result<Command, Cl
     Ok(Command::Scan(ScanOptions {
         roots,
         include_excluded,
+        output_format,
     }))
 }
 
@@ -116,7 +128,10 @@ fn run_scan(options: ScanOptions) -> Result<String, CliError> {
     collect_claude_records(&ScanConfig {
         roots: options.roots,
     })
-    .map(|result| format_scan_report(&result, options.include_excluded))
+    .map(|result| match options.output_format {
+        ScanOutputFormat::Text => format_scan_report(&result, options.include_excluded),
+        ScanOutputFormat::Json => format_scan_json_report(&result, options.include_excluded),
+    })
     .map_err(|error| CliError::runtime(format!("scan failed: {error}")))
 }
 
@@ -134,25 +149,13 @@ fn help_text(version: &str) -> String {
 
 fn scan_help_text() -> String {
     format!(
-        "{program} scan\n\nScan Claude Code usage records.\n\nUsage: {program} scan [OPTIONS]\n\nOptions:\n  -r, --root <PATH>    Scan a Claude config root or projects directory\n      --include-excluded Include synthetic/API-error rows in displayed totals\n  -h, --help           Print help",
+        "{program} scan\n\nScan Claude Code usage records.\n\nUsage: {program} scan [OPTIONS]\n\nOptions:\n  -r, --root <PATH>    Scan a Claude config root or projects directory\n      --include-excluded Include synthetic/API-error rows in displayed totals\n      --json           Print machine-readable JSON\n  -h, --help           Print help",
         program = eltk_core::CLI_NAME
     )
 }
 
 fn format_scan_report(result: &CollectorScanResult, include_excluded: bool) -> String {
-    let included_totals = ScanTotals::from_result(result);
-    let excluded_totals = ScanTotals::from_metered_usage(&result.stats.excluded_usage.usage());
-    let observed_totals = included_totals.saturating_add(&excluded_totals);
-    let displayed_totals = if include_excluded {
-        observed_totals
-    } else {
-        included_totals
-    };
-    let total_scope = if include_excluded {
-        "included + excluded rows"
-    } else {
-        "included records"
-    };
+    let summary = ScanReportSummary::from_result(result, include_excluded);
     let mut output = format!(
         "Claude Code scan\n\
          sources discovered: {}\n\
@@ -186,33 +189,25 @@ fn format_scan_report(result: &CollectorScanResult, include_excluded: bool) -> S
         result.stats.records_emitted,
         result.stats.records_after_merge,
         result.stats.warnings,
-        total_scope,
-        displayed_totals.total_tokens,
-        displayed_totals.bucket_tokens,
-        displayed_totals.input_tokens,
-        displayed_totals.output_tokens,
-        displayed_totals.cache_read_input_tokens,
-        displayed_totals.cache_creation_input_tokens,
-        displayed_totals.reasoning_output_tokens,
-        displayed_totals.extra_total_tokens,
-        displayed_totals.server_tool_requests,
+        summary.total_scope,
+        summary.displayed.total_tokens,
+        summary.displayed.bucket_tokens,
+        summary.displayed.input_tokens,
+        summary.displayed.output_tokens,
+        summary.displayed.cache_read_input_tokens,
+        summary.displayed.cache_creation_input_tokens,
+        summary.displayed.reasoning_output_tokens,
+        summary.displayed.extra_total_tokens,
+        summary.displayed.server_tool_requests,
         result.stats.excluded_usage.records(),
-        excluded_totals.total_tokens,
-        excluded_totals.bucket_tokens,
+        summary.excluded.total_tokens,
+        summary.excluded.bucket_tokens,
         result.stats.excluded_usage.synthetic_records,
-        result
-            .stats
-            .excluded_usage
-            .synthetic_usage
-            .known_total_tokens(),
+        summary.synthetic.total_tokens,
         result.stats.excluded_usage.api_error_records,
-        result
-            .stats
-            .excluded_usage
-            .api_error_usage
-            .known_total_tokens(),
-        observed_totals.total_tokens,
-        observed_totals.bucket_tokens
+        summary.api_error.total_tokens,
+        summary.observed.total_tokens,
+        summary.observed.bucket_tokens
     );
 
     if !result.source_errors.is_empty() {
@@ -227,6 +222,101 @@ fn format_scan_report(result: &CollectorScanResult, include_excluded: bool) -> S
     }
 
     output
+}
+
+fn format_scan_json_report(result: &CollectorScanResult, include_excluded: bool) -> String {
+    let summary = ScanReportSummary::from_result(result, include_excluded);
+    let source_errors = result
+        .source_errors
+        .iter()
+        .map(|error| {
+            json!({
+                "source": error.source.path.to_string_lossy(),
+                "message": error.message,
+            })
+        })
+        .collect::<Vec<_>>();
+    let report = json!({
+        "format": "eltk_scan_v1",
+        "agent": "claude_code",
+        "include_excluded": include_excluded,
+        "total_scope": summary.total_scope,
+        "stats": {
+            "sources_discovered": result.stats.sources_discovered,
+            "sources_scanned": result.stats.sources_scanned,
+            "records_seen": result.stats.records_seen,
+            "records_emitted": result.stats.records_emitted,
+            "records_after_merge": result.stats.records_after_merge,
+            "warnings": result.stats.warnings,
+            "excluded_records": result.stats.excluded_usage.records(),
+            "synthetic_records": result.stats.excluded_usage.synthetic_records,
+            "api_error_records": result.stats.excluded_usage.api_error_records,
+        },
+        "totals": {
+            "displayed": scan_totals_json(summary.displayed),
+            "included": scan_totals_json(summary.included),
+            "excluded": scan_totals_json(summary.excluded),
+            "synthetic": scan_totals_json(summary.synthetic),
+            "api_error": scan_totals_json(summary.api_error),
+            "observed": scan_totals_json(summary.observed),
+        },
+        "source_errors": source_errors,
+    });
+
+    serde_json::to_string_pretty(&report).expect("scan report json is serializable")
+}
+
+fn scan_totals_json(totals: ScanTotals) -> serde_json::Value {
+    json!({
+        "total_tokens": totals.total_tokens,
+        "bucket_tokens": totals.bucket_tokens,
+        "input_tokens": totals.input_tokens,
+        "output_tokens": totals.output_tokens,
+        "cache_read_input_tokens": totals.cache_read_input_tokens,
+        "cache_creation_input_tokens": totals.cache_creation_input_tokens,
+        "reasoning_output_tokens": totals.reasoning_output_tokens,
+        "extra_reported_tokens": totals.extra_total_tokens,
+        "server_tool_requests": totals.server_tool_requests,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ScanReportSummary {
+    included: ScanTotals,
+    excluded: ScanTotals,
+    synthetic: ScanTotals,
+    api_error: ScanTotals,
+    observed: ScanTotals,
+    displayed: ScanTotals,
+    total_scope: &'static str,
+}
+
+impl ScanReportSummary {
+    fn from_result(result: &CollectorScanResult, include_excluded: bool) -> Self {
+        let included = ScanTotals::from_result(result);
+        let synthetic =
+            ScanTotals::from_metered_usage(&result.stats.excluded_usage.synthetic_usage);
+        let api_error =
+            ScanTotals::from_metered_usage(&result.stats.excluded_usage.api_error_usage);
+        let excluded = synthetic.saturating_add(&api_error);
+        let observed = included.saturating_add(&excluded);
+        let displayed = if include_excluded { observed } else { included };
+        let total_scope = if include_excluded {
+            "included + excluded rows"
+        } else {
+            "included records"
+        };
+
+        Self {
+            included,
+            excluded,
+            synthetic,
+            api_error,
+            observed,
+            displayed,
+            total_scope,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -343,6 +433,7 @@ mod tests {
         assert!(help.contains("eltk scan"));
         assert!(help.contains("-r, --root <PATH>"));
         assert!(help.contains("--include-excluded"));
+        assert!(help.contains("--json"));
     }
 
     #[test]
@@ -366,6 +457,7 @@ mod tests {
                     PathBuf::from("/tmp/claude-c"),
                 ],
                 include_excluded: false,
+                output_format: ScanOutputFormat::Text,
             })
         );
     }
@@ -379,6 +471,21 @@ mod tests {
             Command::Scan(ScanOptions {
                 roots: Vec::new(),
                 include_excluded: true,
+                output_format: ScanOutputFormat::Text,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_scan_json_output() {
+        let command = parse_command(["scan".to_owned(), "--json".to_owned()]).unwrap();
+
+        assert_eq!(
+            command,
+            Command::Scan(ScanOptions {
+                roots: Vec::new(),
+                include_excluded: false,
+                output_format: ScanOutputFormat::Json,
             })
         );
     }
@@ -486,6 +593,85 @@ mod tests {
         assert!(report.contains("bucket tokens: 31"));
         assert!(report.contains("input tokens: 14"));
         assert!(report.contains("output tokens: 10"));
+    }
+
+    #[test]
+    fn formats_scan_json_report() {
+        let result = CollectorScanResult {
+            sources: vec![UsageSource::new(SourceKind::ClaudeCodeJsonl, "ok.jsonl")],
+            records: vec![test_record()],
+            source_errors: vec![CollectSourceError {
+                source: UsageSource::new(SourceKind::ClaudeCodeJsonl, "bad.jsonl"),
+                message: "permission denied".to_owned(),
+            }],
+            stats: CollectScanStats {
+                sources_discovered: 2,
+                sources_scanned: 2,
+                records_seen: 4,
+                records_emitted: 1,
+                records_after_merge: 1,
+                warnings: 1,
+                excluded_usage: ScanExcludedUsageStats {
+                    synthetic_records: 1,
+                    synthetic_usage: MeteredUsage {
+                        tokens: TokenUsage {
+                            input_tokens: 2,
+                            output_tokens: 3,
+                            ..TokenUsage::default()
+                        },
+                        ..MeteredUsage::default()
+                    },
+                    api_error_records: 1,
+                    api_error_usage: MeteredUsage {
+                        tokens: TokenUsage {
+                            input_tokens: 4,
+                            output_tokens: 5,
+                            ..TokenUsage::default()
+                        },
+                        ..MeteredUsage::default()
+                    },
+                },
+            },
+        };
+
+        let report = format_scan_json_report(&result, false);
+        let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+
+        assert_eq!(value["format"], "eltk_scan_v1");
+        assert_eq!(value["agent"], "claude_code");
+        assert_eq!(value["include_excluded"], false);
+        assert_eq!(value["total_scope"], "included records");
+        assert_eq!(value["stats"]["records_after_merge"], 1);
+        assert_eq!(value["stats"]["excluded_records"], 2);
+        assert_eq!(value["totals"]["displayed"]["total_tokens"], 25);
+        assert_eq!(value["totals"]["displayed"]["bucket_tokens"], 22);
+        assert_eq!(value["totals"]["observed"]["total_tokens"], 39);
+        assert_eq!(value["totals"]["observed"]["bucket_tokens"], 36);
+        assert_eq!(value["totals"]["synthetic"]["total_tokens"], 5);
+        assert_eq!(value["totals"]["api_error"]["total_tokens"], 9);
+        assert_eq!(value["source_errors"][0]["source"], "bad.jsonl");
+        assert_eq!(value["source_errors"][0]["message"], "permission denied");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn formats_scan_json_report_with_non_utf8_source_error_path() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+        let path = PathBuf::from(OsString::from_vec(b"bad-\xFF.jsonl".to_vec()));
+        let result = CollectorScanResult {
+            source_errors: vec![CollectSourceError {
+                source: UsageSource::new(SourceKind::ClaudeCodeJsonl, path),
+                message: "permission denied".to_owned(),
+            }],
+            ..CollectorScanResult::default()
+        };
+
+        let report = format_scan_json_report(&result, false);
+        let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+
+        assert_eq!(value["source_errors"][0]["source"], "bad-\u{FFFD}.jsonl");
+        assert_eq!(value["source_errors"][0]["message"], "permission denied");
     }
 
     #[test]

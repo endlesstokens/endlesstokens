@@ -21,7 +21,8 @@ cargo run -p eltk -- scan --root /path/to/claude
 By default, `scan` excludes synthetic and API-error rows from displayed totals
 and reports their token buckets separately. Use `--include-excluded` when you
 want displayed totals to include those observed rows, such as subscription
-auditing where all local token activity matters.
+auditing where all local token activity matters. Use `--json` for
+machine-readable scan output.
 
 Run the workspace checks:
 

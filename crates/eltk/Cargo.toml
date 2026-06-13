@@ -14,3 +14,4 @@ description = "EndlessTokens command-line interface."
 [dependencies]
 eltk-collector = { path = "../eltk-collector" }
 eltk-core = { path = "../eltk-core" }
+serde_json = "1.0"

@@ -8,6 +8,7 @@ version = "0.0.0"
 dependencies = [
  "eltk-collector",
  "eltk-core",
+ "serde_json",
 ]
 
 [[package]]
