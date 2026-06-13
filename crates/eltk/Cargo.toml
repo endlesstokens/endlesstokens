@@ -12,4 +12,5 @@ readme.workspace = true
 description = "EndlessTokens command-line interface."
 
 [dependencies]
+eltk-collector = { path = "../eltk-collector" }
 eltk-core = { path = "../eltk-core" }

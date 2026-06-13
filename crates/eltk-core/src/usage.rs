@@ -12,7 +12,9 @@ pub struct MeteredUsage {
 
 impl MeteredUsage {
     pub fn known_total_tokens(&self) -> u64 {
-        self.tokens.total_tokens() + self.extra_total_tokens
+        self.tokens
+            .total_tokens()
+            .saturating_add(self.extra_total_tokens)
     }
 }
 
@@ -52,15 +54,15 @@ impl TokenUsage {
 
     pub fn total_tokens(&self) -> u64 {
         self.input_tokens
-            + self.output_tokens
-            + self.cache_read_input_tokens
-            + self.cache_creation_input_tokens
-            + self.reasoning_output_tokens
+            .saturating_add(self.output_tokens)
+            .saturating_add(self.cache_read_input_tokens)
+            .saturating_add(self.cache_creation_input_tokens)
+            .saturating_add(self.reasoning_output_tokens)
     }
 
     pub fn cache_creation_ttl_total(&self) -> u64 {
         self.cache_creation_ephemeral_5m_input_tokens
-            + self.cache_creation_ephemeral_1h_input_tokens
+            .saturating_add(self.cache_creation_ephemeral_1h_input_tokens)
     }
 
     pub fn reconcile_cache_creation_from_ttl(&mut self) {
@@ -81,7 +83,9 @@ impl ServerToolUsage {
     pub fn total_requests(&self) -> u64 {
         self.other
             .values()
-            .fold(self.web_search_requests, |total, value| total + value)
+            .fold(self.web_search_requests, |total, value| {
+                total.saturating_add(*value)
+            })
     }
 }
 
@@ -125,5 +129,51 @@ mod tests {
         };
 
         assert_eq!(usage.known_total_tokens(), 7);
+    }
+
+    #[test]
+    fn token_total_saturates_on_overflow() {
+        let usage = TokenUsage {
+            input_tokens: u64::MAX,
+            output_tokens: 1,
+            ..TokenUsage::default()
+        };
+
+        assert_eq!(usage.total_tokens(), u64::MAX);
+    }
+
+    #[test]
+    fn cache_creation_ttl_total_saturates_on_overflow() {
+        let usage = TokenUsage {
+            cache_creation_ephemeral_5m_input_tokens: u64::MAX,
+            cache_creation_ephemeral_1h_input_tokens: 1,
+            ..TokenUsage::default()
+        };
+
+        assert_eq!(usage.cache_creation_ttl_total(), u64::MAX);
+    }
+
+    #[test]
+    fn metered_usage_total_saturates_on_overflow() {
+        let usage = MeteredUsage {
+            tokens: TokenUsage {
+                input_tokens: u64::MAX,
+                ..TokenUsage::default()
+            },
+            extra_total_tokens: 1,
+            ..MeteredUsage::default()
+        };
+
+        assert_eq!(usage.known_total_tokens(), u64::MAX);
+    }
+
+    #[test]
+    fn server_tool_total_saturates_on_overflow() {
+        let usage = ServerToolUsage {
+            web_search_requests: u64::MAX,
+            other: BTreeMap::from([("mcp_tool_requests".to_owned(), 1)]),
+        };
+
+        assert_eq!(usage.total_requests(), u64::MAX);
     }
 }

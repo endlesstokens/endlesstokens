@@ -6,6 +6,7 @@ version = 4
 name = "eltk"
 version = "0.0.0"
 dependencies = [
+ "eltk-collector",
  "eltk-core",
 ]
 
