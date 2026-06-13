@@ -653,6 +653,22 @@ mod tests {
         assert_eq!(value["source_errors"][0]["message"], "permission denied");
     }
 
+    #[test]
+    fn scan_json_matches_default_golden_fixture() {
+        let output = run_scan_json_fixture(false);
+        let expected = read_json_fixture("scan-json/expected-default.json");
+
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn scan_json_matches_include_excluded_golden_fixture() {
+        let output = run_scan_json_fixture(true);
+        let expected = read_json_fixture("scan-json/expected-include-excluded.json");
+
+        assert_eq!(output, expected);
+    }
+
     #[cfg(unix)]
     #[test]
     fn formats_scan_json_report_with_non_utf8_source_error_path() {
@@ -697,6 +713,35 @@ mod tests {
         assert_eq!(totals.total_tokens, u64::MAX);
         assert_eq!(totals.input_tokens, u64::MAX);
         assert_eq!(totals.output_tokens, 2);
+    }
+
+    fn run_scan_json_fixture(include_excluded: bool) -> serde_json::Value {
+        let root = fixture_path("scan-json/claude");
+        let mut args = vec![
+            "scan".to_owned(),
+            "--root".to_owned(),
+            root.to_string_lossy().into_owned(),
+            "--json".to_owned(),
+        ];
+        if include_excluded {
+            args.push("--include-excluded".to_owned());
+        }
+
+        let output = run(args).unwrap();
+        serde_json::from_str(&output).unwrap()
+    }
+
+    fn read_json_fixture(relative_path: &str) -> serde_json::Value {
+        let path = fixture_path(relative_path);
+        let content = std::fs::read_to_string(path).unwrap();
+        serde_json::from_str(&content).unwrap()
+    }
+
+    fn fixture_path(relative_path: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(relative_path)
     }
 
     fn test_record() -> UsageRecord {
