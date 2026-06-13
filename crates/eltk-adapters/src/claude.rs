@@ -46,39 +46,72 @@ impl ClaudeCodeAdapter {
         byte_len: u64,
         ingested_at: Timestamp,
     ) -> AdapterResult<Option<UsageRecord>> {
+        match self.parse_jsonl_line_outcome(
+            line,
+            source,
+            line_number,
+            byte_offset,
+            byte_len,
+            ingested_at,
+        )? {
+            ParsedClaudeLine::Record(record) => Ok(Some(*record)),
+            ParsedClaudeLine::Excluded(_) | ParsedClaudeLine::Ignored => Ok(None),
+        }
+    }
+
+    fn parse_jsonl_line_outcome(
+        &self,
+        line: &str,
+        source: &UsageSource,
+        line_number: u64,
+        byte_offset: u64,
+        byte_len: u64,
+        ingested_at: Timestamp,
+    ) -> AdapterResult<ParsedClaudeLine> {
         let line = line.trim_end_matches(['\r', '\n']);
         if line.trim().is_empty() {
-            return Ok(None);
+            return Ok(ParsedClaudeLine::Ignored);
         }
 
         let value: Value = serde_json::from_str(line)
             .map_err(|error| AdapterError::new(format!("invalid Claude JSONL line: {error}")))?;
         let Some(object) = value.as_object() else {
-            return Ok(None);
+            return Ok(ParsedClaudeLine::Ignored);
         };
 
         let Some(message) = object.get("message").and_then(Value::as_object) else {
-            return Ok(None);
+            return Ok(ParsedClaudeLine::Ignored);
         };
-        if !is_assistant_usage_row(object, message) {
-            return Ok(None);
-        }
-
-        if object
+        let is_api_error_message = object
             .get("isApiErrorMessage")
             .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            return Ok(None);
-        }
+            .unwrap_or(false);
+        let is_assistant_usage_row = is_assistant_usage_row(object, message);
         let model = message.get("model").and_then(Value::as_str);
-        if model == Some("<synthetic>") {
-            return Ok(None);
-        }
 
         let Some(usage) = message.get("usage").and_then(Value::as_object) else {
-            return Ok(None);
+            return Ok(ParsedClaudeLine::Ignored);
         };
+        let mut warnings = Vec::new();
+        let usage = metered_usage_from_value(usage, &mut warnings);
+
+        if is_api_error_message {
+            return Ok(ParsedClaudeLine::Excluded(ExcludedClaudeLine {
+                kind: ExcludedClaudeLineKind::ApiError,
+                usage,
+                warnings,
+            }));
+        }
+        if !is_assistant_usage_row {
+            return Ok(ParsedClaudeLine::Ignored);
+        }
+        if model == Some("<synthetic>") {
+            return Ok(ParsedClaudeLine::Excluded(ExcludedClaudeLine {
+                kind: ExcludedClaudeLineKind::Synthetic,
+                usage,
+                warnings,
+            }));
+        }
 
         let message_id = message.get("id").and_then(Value::as_str).map(str::to_owned);
         let request_id = object
@@ -88,7 +121,6 @@ impl ClaudeCodeAdapter {
         let source_path_hash = stable_hash(source.path.to_string_lossy().as_bytes());
         let line_hash = stable_hash(line.as_bytes());
 
-        let mut warnings = Vec::new();
         let (dedup, identity_confidence) = match (&message_id, &request_id) {
             (Some(message_id), Some(request_id)) => (
                 DedupIdentity::claude_message_request(message_id, request_id),
@@ -135,7 +167,6 @@ impl ClaudeCodeAdapter {
                 (ingested_at.clone(), TimestampConfidence::Inferred)
             };
 
-        let usage = metered_usage_from_value(usage, &mut warnings);
         let cost = cost_from_value(&value);
         let cost_confidence = match cost.source {
             CostSource::Reported => CostConfidence::Reported,
@@ -156,50 +187,52 @@ impl ClaudeCodeAdapter {
         source_provenance.line_number = Some(line_number);
         source_provenance.line_hash = Some(line_hash);
 
-        Ok(Some(UsageRecord::from_parts(UsageRecordParts {
-            dedup,
-            observed_at,
-            source: source_provenance,
-            actor: actor_from_model(model),
-            context: UsageContext {
-                session_id: object
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                parent_session_id: object
-                    .get("parentSessionId")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                message_id,
-                request_id,
-                turn_id: None,
-                cwd: object.get("cwd").and_then(Value::as_str).map(str::to_owned),
-                project: None,
-                git_branch: object
-                    .get("gitBranch")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                version: object
-                    .get("version")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                agent_name: None,
-                is_sidechain: object
-                    .get("isSidechain")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                is_api_error_message: false,
-                is_synthetic: false,
+        Ok(ParsedClaudeLine::Record(Box::new(UsageRecord::from_parts(
+            UsageRecordParts {
+                dedup,
+                observed_at,
+                source: source_provenance,
+                actor: actor_from_model(model),
+                context: UsageContext {
+                    session_id: object
+                        .get("sessionId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    parent_session_id: object
+                        .get("parentSessionId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    message_id,
+                    request_id,
+                    turn_id: None,
+                    cwd: object.get("cwd").and_then(Value::as_str).map(str::to_owned),
+                    project: None,
+                    git_branch: object
+                        .get("gitBranch")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    version: object
+                        .get("version")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    agent_name: None,
+                    is_sidechain: object
+                        .get("isSidechain")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    is_api_error_message,
+                    is_synthetic: false,
+                },
+                usage,
+                cost,
+                quality: RecordQuality {
+                    identity_confidence,
+                    timestamp_confidence,
+                    cost_confidence,
+                    warnings,
+                },
             },
-            usage,
-            cost,
-            quality: RecordQuality {
-                identity_confidence,
-                timestamp_confidence,
-                cost_confidence,
-                warnings,
-            },
-        })))
+        ))))
     }
 }
 
@@ -245,7 +278,7 @@ impl UsageAdapter for ClaudeCodeAdapter {
             }
 
             stats.records_seen += 1;
-            match self.parse_jsonl_line(
+            match self.parse_jsonl_line_outcome(
                 &line,
                 source,
                 stats.records_seen,
@@ -253,12 +286,23 @@ impl UsageAdapter for ClaudeCodeAdapter {
                 bytes_read as u64,
                 ingested_at.clone(),
             ) {
-                Ok(Some(record)) => {
+                Ok(ParsedClaudeLine::Record(record)) => {
                     stats.records_emitted += 1;
                     stats.warnings += record.quality.warnings.len() as u64;
-                    sink.push(record);
+                    sink.push(*record);
                 }
-                Ok(None) => {}
+                Ok(ParsedClaudeLine::Excluded(excluded)) => {
+                    stats.warnings += excluded.warnings.len() as u64;
+                    match excluded.kind {
+                        ExcludedClaudeLineKind::Synthetic => {
+                            stats.excluded_usage.add_synthetic(&excluded.usage);
+                        }
+                        ExcludedClaudeLineKind::ApiError => {
+                            stats.excluded_usage.add_api_error(&excluded.usage);
+                        }
+                    }
+                }
+                Ok(ParsedClaudeLine::Ignored) => {}
                 Err(_) => {
                     stats.warnings += 1;
                 }
@@ -268,6 +312,26 @@ impl UsageAdapter for ClaudeCodeAdapter {
 
         Ok(stats)
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ParsedClaudeLine {
+    Record(Box<UsageRecord>),
+    Excluded(ExcludedClaudeLine),
+    Ignored,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExcludedClaudeLine {
+    kind: ExcludedClaudeLineKind,
+    usage: MeteredUsage,
+    warnings: Vec<RecordWarning>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExcludedClaudeLineKind {
+    Synthetic,
+    ApiError,
 }
 
 fn is_assistant_usage_row(

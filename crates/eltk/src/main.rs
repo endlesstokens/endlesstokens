@@ -3,7 +3,7 @@
 use std::{env, path::PathBuf, process};
 
 use eltk_collector::{CollectorScanResult, collect_claude_records};
-use eltk_core::ScanConfig;
+use eltk_core::{MeteredUsage, ScanConfig};
 
 fn main() {
     match run(env::args().skip(1)) {
@@ -35,6 +35,7 @@ enum Command {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct ScanOptions {
     roots: Vec<PathBuf>,
+    include_excluded: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,11 +79,13 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, CliE
 
 fn parse_scan_args(args: impl IntoIterator<Item = String>) -> Result<Command, CliError> {
     let mut roots = Vec::new();
+    let mut include_excluded = false;
     let mut args = args.into_iter();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" | "-h" => return Ok(Command::ScanHelp),
+            "--include-excluded" => include_excluded = true,
             "--root" | "-r" => {
                 let Some(root) = args.next() else {
                     return Err(CliError::usage(
@@ -103,14 +106,17 @@ fn parse_scan_args(args: impl IntoIterator<Item = String>) -> Result<Command, Cl
         }
     }
 
-    Ok(Command::Scan(ScanOptions { roots }))
+    Ok(Command::Scan(ScanOptions {
+        roots,
+        include_excluded,
+    }))
 }
 
 fn run_scan(options: ScanOptions) -> Result<String, CliError> {
     collect_claude_records(&ScanConfig {
         roots: options.roots,
     })
-    .map(|result| format_scan_report(&result))
+    .map(|result| format_scan_report(&result, options.include_excluded))
     .map_err(|error| CliError::runtime(format!("scan failed: {error}")))
 }
 
@@ -128,13 +134,25 @@ fn help_text(version: &str) -> String {
 
 fn scan_help_text() -> String {
     format!(
-        "{program} scan\n\nScan Claude Code usage records.\n\nUsage: {program} scan [OPTIONS]\n\nOptions:\n  -r, --root <PATH> Scan a Claude config root or projects directory\n  -h, --help        Print help",
+        "{program} scan\n\nScan Claude Code usage records.\n\nUsage: {program} scan [OPTIONS]\n\nOptions:\n  -r, --root <PATH>    Scan a Claude config root or projects directory\n      --include-excluded Include synthetic/API-error rows in displayed totals\n  -h, --help           Print help",
         program = eltk_core::CLI_NAME
     )
 }
 
-fn format_scan_report(result: &CollectorScanResult) -> String {
-    let totals = ScanTotals::from_result(result);
+fn format_scan_report(result: &CollectorScanResult, include_excluded: bool) -> String {
+    let included_totals = ScanTotals::from_result(result);
+    let excluded_totals = ScanTotals::from_metered_usage(&result.stats.excluded_usage.usage());
+    let observed_totals = included_totals.saturating_add(&excluded_totals);
+    let displayed_totals = if include_excluded {
+        observed_totals
+    } else {
+        included_totals
+    };
+    let total_scope = if include_excluded {
+        "included + excluded rows"
+    } else {
+        "included records"
+    };
     let mut output = format!(
         "Claude Code scan\n\
          sources discovered: {}\n\
@@ -143,28 +161,58 @@ fn format_scan_report(result: &CollectorScanResult) -> String {
          records emitted: {}\n\
          records after merge: {}\n\
          warnings: {}\n\
+         total token scope: {}\n\
          total tokens: {}\n\
+         bucket tokens: {}\n\
          input tokens: {}\n\
          output tokens: {}\n\
          cache read input tokens: {}\n\
          cache creation input tokens: {}\n\
          reasoning output tokens: {}\n\
          extra reported tokens: {}\n\
-         server tool requests: {}",
+         server tool requests: {}\n\
+         excluded records: {}\n\
+         excluded total tokens: {}\n\
+         excluded bucket tokens: {}\n\
+         synthetic records: {}\n\
+         synthetic total tokens: {}\n\
+         api error records: {}\n\
+         api error total tokens: {}\n\
+         observed total tokens: {}\n\
+         observed bucket tokens: {}",
         result.stats.sources_discovered,
         result.stats.sources_scanned,
         result.stats.records_seen,
         result.stats.records_emitted,
         result.stats.records_after_merge,
         result.stats.warnings,
-        totals.total_tokens,
-        totals.input_tokens,
-        totals.output_tokens,
-        totals.cache_read_input_tokens,
-        totals.cache_creation_input_tokens,
-        totals.reasoning_output_tokens,
-        totals.extra_total_tokens,
-        totals.server_tool_requests
+        total_scope,
+        displayed_totals.total_tokens,
+        displayed_totals.bucket_tokens,
+        displayed_totals.input_tokens,
+        displayed_totals.output_tokens,
+        displayed_totals.cache_read_input_tokens,
+        displayed_totals.cache_creation_input_tokens,
+        displayed_totals.reasoning_output_tokens,
+        displayed_totals.extra_total_tokens,
+        displayed_totals.server_tool_requests,
+        result.stats.excluded_usage.records(),
+        excluded_totals.total_tokens,
+        excluded_totals.bucket_tokens,
+        result.stats.excluded_usage.synthetic_records,
+        result
+            .stats
+            .excluded_usage
+            .synthetic_usage
+            .known_total_tokens(),
+        result.stats.excluded_usage.api_error_records,
+        result
+            .stats
+            .excluded_usage
+            .api_error_usage
+            .known_total_tokens(),
+        observed_totals.total_tokens,
+        observed_totals.bucket_tokens
     );
 
     if !result.source_errors.is_empty() {
@@ -184,6 +232,7 @@ fn format_scan_report(result: &CollectorScanResult) -> String {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct ScanTotals {
     total_tokens: u64,
+    bucket_tokens: u64,
     input_tokens: u64,
     output_tokens: u64,
     cache_read_input_tokens: u64,
@@ -198,33 +247,66 @@ impl ScanTotals {
         let mut totals = Self::default();
 
         for record in &result.records {
-            totals.total_tokens = totals
-                .total_tokens
-                .saturating_add(record.usage.known_total_tokens());
-            totals.input_tokens = totals
-                .input_tokens
-                .saturating_add(record.usage.tokens.input_tokens);
-            totals.output_tokens = totals
-                .output_tokens
-                .saturating_add(record.usage.tokens.output_tokens);
-            totals.cache_read_input_tokens = totals
-                .cache_read_input_tokens
-                .saturating_add(record.usage.tokens.cache_read_input_tokens);
-            totals.cache_creation_input_tokens = totals
-                .cache_creation_input_tokens
-                .saturating_add(record.usage.tokens.cache_creation_input_tokens);
-            totals.reasoning_output_tokens = totals
-                .reasoning_output_tokens
-                .saturating_add(record.usage.tokens.reasoning_output_tokens);
-            totals.extra_total_tokens = totals
-                .extra_total_tokens
-                .saturating_add(record.usage.extra_total_tokens);
-            totals.server_tool_requests = totals
-                .server_tool_requests
-                .saturating_add(record.usage.server_tools.total_requests());
+            totals.saturating_add_usage(&record.usage);
         }
 
         totals
+    }
+
+    fn from_metered_usage(usage: &MeteredUsage) -> Self {
+        let mut totals = Self::default();
+        totals.saturating_add_usage(usage);
+        totals
+    }
+
+    fn saturating_add(&self, other: &Self) -> Self {
+        Self {
+            total_tokens: self.total_tokens.saturating_add(other.total_tokens),
+            bucket_tokens: self.bucket_tokens.saturating_add(other.bucket_tokens),
+            input_tokens: self.input_tokens.saturating_add(other.input_tokens),
+            output_tokens: self.output_tokens.saturating_add(other.output_tokens),
+            cache_read_input_tokens: self
+                .cache_read_input_tokens
+                .saturating_add(other.cache_read_input_tokens),
+            cache_creation_input_tokens: self
+                .cache_creation_input_tokens
+                .saturating_add(other.cache_creation_input_tokens),
+            reasoning_output_tokens: self
+                .reasoning_output_tokens
+                .saturating_add(other.reasoning_output_tokens),
+            extra_total_tokens: self
+                .extra_total_tokens
+                .saturating_add(other.extra_total_tokens),
+            server_tool_requests: self
+                .server_tool_requests
+                .saturating_add(other.server_tool_requests),
+        }
+    }
+
+    fn saturating_add_usage(&mut self, usage: &MeteredUsage) {
+        self.total_tokens = self.total_tokens.saturating_add(usage.known_total_tokens());
+        self.bucket_tokens = self
+            .bucket_tokens
+            .saturating_add(usage.bucket_total_tokens());
+        self.input_tokens = self.input_tokens.saturating_add(usage.tokens.input_tokens);
+        self.output_tokens = self
+            .output_tokens
+            .saturating_add(usage.tokens.output_tokens);
+        self.cache_read_input_tokens = self
+            .cache_read_input_tokens
+            .saturating_add(usage.tokens.cache_read_input_tokens);
+        self.cache_creation_input_tokens = self
+            .cache_creation_input_tokens
+            .saturating_add(usage.tokens.cache_creation_input_tokens);
+        self.reasoning_output_tokens = self
+            .reasoning_output_tokens
+            .saturating_add(usage.tokens.reasoning_output_tokens);
+        self.extra_total_tokens = self
+            .extra_total_tokens
+            .saturating_add(usage.extra_total_tokens);
+        self.server_tool_requests = self
+            .server_tool_requests
+            .saturating_add(usage.server_tools.total_requests());
     }
 }
 
@@ -233,9 +315,9 @@ mod tests {
     use super::*;
     use eltk_collector::{CollectScanStats, CollectSourceError};
     use eltk_core::{
-        CostInfo, DedupIdentity, MeteredUsage, RecordQuality, ServerToolUsage, SourceKind,
-        SourceProvenance, Timestamp, TokenUsage, UsageActor, UsageContext, UsageRecord,
-        UsageRecordParts, UsageSource,
+        CostInfo, DedupIdentity, MeteredUsage, RecordQuality, ScanExcludedUsageStats,
+        ServerToolUsage, SourceKind, SourceProvenance, Timestamp, TokenUsage, UsageActor,
+        UsageContext, UsageRecord, UsageRecordParts, UsageSource,
     };
     use std::collections::BTreeMap;
 
@@ -260,6 +342,7 @@ mod tests {
 
         assert!(help.contains("eltk scan"));
         assert!(help.contains("-r, --root <PATH>"));
+        assert!(help.contains("--include-excluded"));
     }
 
     #[test]
@@ -282,6 +365,20 @@ mod tests {
                     PathBuf::from("/tmp/claude-b"),
                     PathBuf::from("/tmp/claude-c"),
                 ],
+                include_excluded: false,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_scan_include_excluded() {
+        let command = parse_command(["scan".to_owned(), "--include-excluded".to_owned()]).unwrap();
+
+        assert_eq!(
+            command,
+            Command::Scan(ScanOptions {
+                roots: Vec::new(),
+                include_excluded: true,
             })
         );
     }
@@ -310,15 +407,37 @@ mod tests {
                 records_emitted: 1,
                 records_after_merge: 1,
                 warnings: 1,
+                excluded_usage: ScanExcludedUsageStats {
+                    synthetic_records: 1,
+                    synthetic_usage: MeteredUsage {
+                        tokens: TokenUsage {
+                            input_tokens: 2,
+                            output_tokens: 3,
+                            ..TokenUsage::default()
+                        },
+                        ..MeteredUsage::default()
+                    },
+                    api_error_records: 1,
+                    api_error_usage: MeteredUsage {
+                        tokens: TokenUsage {
+                            input_tokens: 4,
+                            output_tokens: 5,
+                            ..TokenUsage::default()
+                        },
+                        ..MeteredUsage::default()
+                    },
+                },
             },
         };
 
-        let report = format_scan_report(&result);
+        let report = format_scan_report(&result, false);
 
         assert!(report.contains("sources discovered: 2"));
         assert!(report.contains("records after merge: 1"));
         assert!(report.contains("warnings: 1"));
+        assert!(report.contains("total token scope: included records"));
         assert!(report.contains("total tokens: 25"));
+        assert!(report.contains("bucket tokens: 22"));
         assert!(report.contains("input tokens: 10"));
         assert!(report.contains("output tokens: 5"));
         assert!(report.contains("cache read input tokens: 3"));
@@ -326,7 +445,47 @@ mod tests {
         assert!(report.contains("reasoning output tokens: 2"));
         assert!(report.contains("extra reported tokens: 1"));
         assert!(report.contains("server tool requests: 3"));
+        assert!(report.contains("excluded records: 2"));
+        assert!(report.contains("excluded total tokens: 14"));
+        assert!(report.contains("excluded bucket tokens: 14"));
+        assert!(report.contains("synthetic records: 1"));
+        assert!(report.contains("synthetic total tokens: 5"));
+        assert!(report.contains("api error records: 1"));
+        assert!(report.contains("api error total tokens: 9"));
+        assert!(report.contains("observed total tokens: 39"));
+        assert!(report.contains("observed bucket tokens: 36"));
         assert!(report.contains("source errors:\n  bad.jsonl: permission denied"));
+    }
+
+    #[test]
+    fn format_scan_report_can_include_excluded_usage_in_displayed_totals() {
+        let result = CollectorScanResult {
+            records: vec![test_record()],
+            stats: CollectScanStats {
+                excluded_usage: ScanExcludedUsageStats {
+                    api_error_records: 1,
+                    api_error_usage: MeteredUsage {
+                        tokens: TokenUsage {
+                            input_tokens: 4,
+                            output_tokens: 5,
+                            ..TokenUsage::default()
+                        },
+                        ..MeteredUsage::default()
+                    },
+                    ..ScanExcludedUsageStats::default()
+                },
+                ..CollectScanStats::default()
+            },
+            ..CollectorScanResult::default()
+        };
+
+        let report = format_scan_report(&result, true);
+
+        assert!(report.contains("total token scope: included + excluded rows"));
+        assert!(report.contains("total tokens: 34"));
+        assert!(report.contains("bucket tokens: 31"));
+        assert!(report.contains("input tokens: 14"));
+        assert!(report.contains("output tokens: 10"));
     }
 
     #[test]

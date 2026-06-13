@@ -60,6 +60,12 @@ fn scans_sanitized_claude_usage_records() {
     assert_eq!(stats.records_seen, 5);
     assert_eq!(stats.records_emitted, 2);
     assert_eq!(stats.warnings, 2);
+    assert_eq!(stats.excluded_usage.synthetic_records, 1);
+    assert_eq!(stats.excluded_usage.synthetic_usage.tokens.input_tokens, 1);
+    assert_eq!(stats.excluded_usage.synthetic_usage.tokens.output_tokens, 1);
+    assert_eq!(stats.excluded_usage.api_error_records, 1);
+    assert_eq!(stats.excluded_usage.api_error_usage.tokens.input_tokens, 1);
+    assert_eq!(stats.excluded_usage.api_error_usage.tokens.output_tokens, 1);
 
     let record = &records[0];
     assert_eq!(record.dedup.scope, DedupScope::Global);
@@ -149,9 +155,12 @@ fn accepts_role_only_assistant_usage_records() {
 
     let stats = adapter.scan_source(&source, &mut records).unwrap();
 
-    assert_eq!(stats.records_seen, 3);
+    assert_eq!(stats.records_seen, 4);
     assert_eq!(stats.records_emitted, 1);
     assert_eq!(stats.warnings, 0);
+    assert_eq!(stats.excluded_usage.api_error_records, 1);
+    assert_eq!(stats.excluded_usage.api_error_usage.tokens.input_tokens, 2);
+    assert_eq!(stats.excluded_usage.api_error_usage.tokens.output_tokens, 3);
 
     let record = &records[0];
     assert_eq!(

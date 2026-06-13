@@ -1,3 +1,4 @@
 {"timestamp":"2026-01-09T10:00:00.000Z","sessionId":"session-role-only","message":{"role":"assistant","id":"msg-role-only-1","model":"claude-sonnet-4-20250514","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":25,"cache_read_input_tokens":10}},"requestId":"req-role-only-1","costUSD":0.12,"version":"1.0.0"}
 {"timestamp":"2026-01-09T10:01:00.000Z","sessionId":"session-role-only","message":{"role":"user","content":"sanitized prompt","usage":{"input_tokens":999,"output_tokens":999}}}
 {"type":"user","timestamp":"2026-01-09T10:02:00.000Z","sessionId":"session-role-only","message":{"role":"assistant","id":"msg-explicit-user","model":"claude-sonnet-4-20250514","usage":{"input_tokens":999,"output_tokens":999}},"requestId":"req-explicit-user"}
+{"timestamp":"2026-01-09T10:03:00.000Z","sessionId":"session-role-only","isApiErrorMessage":true,"message":{"content":[{"text":"sanitized api error"}],"usage":{"input_tokens":2,"output_tokens":3}}}

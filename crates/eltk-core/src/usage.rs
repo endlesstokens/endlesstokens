@@ -16,6 +16,19 @@ impl MeteredUsage {
             .total_tokens()
             .saturating_add(self.extra_total_tokens)
     }
+
+    pub fn bucket_total_tokens(&self) -> u64 {
+        self.tokens.bucket_total_tokens()
+    }
+
+    pub fn saturating_add_assign(&mut self, other: &Self) {
+        self.tokens.saturating_add_assign(&other.tokens);
+        self.server_tools.saturating_add_assign(&other.server_tools);
+        self.extra_total_tokens = self
+            .extra_total_tokens
+            .saturating_add(other.extra_total_tokens);
+        self.reported_total_tokens = None;
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
@@ -53,11 +66,35 @@ impl TokenUsage {
     }
 
     pub fn total_tokens(&self) -> u64 {
+        self.bucket_total_tokens()
+            .saturating_add(self.reasoning_output_tokens)
+    }
+
+    pub fn bucket_total_tokens(&self) -> u64 {
         self.input_tokens
             .saturating_add(self.output_tokens)
             .saturating_add(self.cache_read_input_tokens)
             .saturating_add(self.cache_creation_input_tokens)
-            .saturating_add(self.reasoning_output_tokens)
+    }
+
+    pub fn saturating_add_assign(&mut self, other: &Self) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.cache_read_input_tokens = self
+            .cache_read_input_tokens
+            .saturating_add(other.cache_read_input_tokens);
+        self.cache_creation_input_tokens = self
+            .cache_creation_input_tokens
+            .saturating_add(other.cache_creation_input_tokens);
+        self.cache_creation_ephemeral_5m_input_tokens = self
+            .cache_creation_ephemeral_5m_input_tokens
+            .saturating_add(other.cache_creation_ephemeral_5m_input_tokens);
+        self.cache_creation_ephemeral_1h_input_tokens = self
+            .cache_creation_ephemeral_1h_input_tokens
+            .saturating_add(other.cache_creation_ephemeral_1h_input_tokens);
+        self.reasoning_output_tokens = self
+            .reasoning_output_tokens
+            .saturating_add(other.reasoning_output_tokens);
     }
 
     pub fn cache_creation_ttl_total(&self) -> u64 {
@@ -87,6 +124,16 @@ impl ServerToolUsage {
                 total.saturating_add(*value)
             })
     }
+
+    pub fn saturating_add_assign(&mut self, other: &Self) {
+        self.web_search_requests = self
+            .web_search_requests
+            .saturating_add(other.web_search_requests);
+        for (name, count) in &other.other {
+            let total = self.other.entry(name.clone()).or_default();
+            *total = total.saturating_add(*count);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -106,6 +153,7 @@ mod tests {
         };
 
         assert_eq!(usage.total_tokens(), 150);
+        assert_eq!(usage.bucket_total_tokens(), 100);
     }
 
     #[test]
@@ -175,5 +223,34 @@ mod tests {
         };
 
         assert_eq!(usage.total_requests(), u64::MAX);
+    }
+
+    #[test]
+    fn metered_usage_add_assign_saturates_totals() {
+        let mut usage = MeteredUsage {
+            tokens: TokenUsage {
+                input_tokens: u64::MAX,
+                output_tokens: 1,
+                ..TokenUsage::default()
+            },
+            extra_total_tokens: 1,
+            reported_total_tokens: Some(10),
+            ..MeteredUsage::default()
+        };
+        usage.saturating_add_assign(&MeteredUsage {
+            tokens: TokenUsage {
+                input_tokens: 1,
+                output_tokens: 2,
+                ..TokenUsage::default()
+            },
+            extra_total_tokens: 2,
+            reported_total_tokens: Some(5),
+            ..MeteredUsage::default()
+        });
+
+        assert_eq!(usage.tokens.input_tokens, u64::MAX);
+        assert_eq!(usage.tokens.output_tokens, 3);
+        assert_eq!(usage.extra_total_tokens, 3);
+        assert_eq!(usage.reported_total_tokens, None);
     }
 }

@@ -2,7 +2,8 @@
 
 use eltk_adapters::ClaudeCodeAdapter;
 use eltk_core::{
-    AdapterResult, ScanConfig, ScanSourceStats, UsageAdapter, UsageRecord, UsageSource,
+    AdapterResult, ScanConfig, ScanExcludedUsageStats, ScanSourceStats, UsageAdapter, UsageRecord,
+    UsageSource,
 };
 
 use crate::dedup::merge_claude_records;
@@ -21,7 +22,7 @@ pub struct CollectSourceError {
     pub message: String,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub struct CollectScanStats {
     pub sources_discovered: u64,
     pub sources_scanned: u64,
@@ -29,6 +30,7 @@ pub struct CollectScanStats {
     pub records_emitted: u64,
     pub records_after_merge: u64,
     pub warnings: u64,
+    pub excluded_usage: ScanExcludedUsageStats,
 }
 
 impl CollectScanStats {
@@ -37,6 +39,8 @@ impl CollectScanStats {
         self.records_seen += source_stats.records_seen;
         self.records_emitted += source_stats.records_emitted;
         self.warnings += source_stats.warnings;
+        self.excluded_usage
+            .saturating_add_assign(&source_stats.excluded_usage);
     }
 }
 
@@ -145,11 +149,20 @@ mod tests {
         let root = TestRoot::new("aggregates-stats");
         root.write_jsonl(
             "projects/example/a.jsonl",
-            [streamed_record("msg-a", "req-a", 10, 1), user_record()].join("\n"),
+            [
+                streamed_record("msg-a", "req-a", 10, 1),
+                user_record(),
+                synthetic_record(2, 2),
+            ]
+            .join("\n"),
         );
         root.write_jsonl(
             "projects/example/b.jsonl",
-            [streamed_record("msg-b", "req-b", 20, 1)].join("\n"),
+            [
+                streamed_record("msg-b", "req-b", 20, 1),
+                api_error_record(3, 2),
+            ]
+            .join("\n"),
         );
 
         let result = collect_claude_records(&ScanConfig {
@@ -159,9 +172,29 @@ mod tests {
 
         assert_eq!(result.stats.sources_discovered, 2);
         assert_eq!(result.stats.sources_scanned, 2);
-        assert_eq!(result.stats.records_seen, 3);
+        assert_eq!(result.stats.records_seen, 5);
         assert_eq!(result.stats.records_emitted, 2);
         assert_eq!(result.stats.records_after_merge, 2);
+        assert_eq!(result.stats.excluded_usage.synthetic_records, 1);
+        assert_eq!(
+            result
+                .stats
+                .excluded_usage
+                .synthetic_usage
+                .tokens
+                .input_tokens,
+            2
+        );
+        assert_eq!(result.stats.excluded_usage.api_error_records, 1);
+        assert_eq!(
+            result
+                .stats
+                .excluded_usage
+                .api_error_usage
+                .tokens
+                .input_tokens,
+            3
+        );
         assert_eq!(result.records.len(), 2);
     }
 
@@ -222,6 +255,7 @@ mod tests {
                 records_seen: 1,
                 records_emitted: 1,
                 warnings: 0,
+                ..ScanSourceStats::default()
             })
         }
     }
@@ -283,6 +317,18 @@ mod tests {
 
     fn user_record() -> String {
         r#"{"type":"user","timestamp":"2026-06-13T00:00:00Z","sessionId":"session-main","message":{"role":"user","content":"sanitized"}}"#.to_owned()
+    }
+
+    fn synthetic_record(input_tokens: u64, minute: u64) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"2026-06-13T00:{minute:02}:00Z","sessionId":"session-main","requestId":"req-synthetic","message":{{"id":"msg-synthetic","model":"<synthetic>","usage":{{"input_tokens":{input_tokens},"output_tokens":0}}}}}}"#
+        )
+    }
+
+    fn api_error_record(input_tokens: u64, minute: u64) -> String {
+        format!(
+            r#"{{"timestamp":"2026-06-13T00:{minute:02}:00Z","sessionId":"session-main","isApiErrorMessage":true,"message":{{"content":[{{"text":"sanitized error"}}],"usage":{{"input_tokens":{input_tokens},"output_tokens":0}}}}}}"#
+        )
     }
 
     fn test_record(message_id: &str, request_id: &str, input_tokens: u64) -> UsageRecord {

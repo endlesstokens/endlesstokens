@@ -17,8 +17,8 @@ pub mod time;
 pub mod usage;
 
 pub use adapter::{
-    AdapterError, AdapterResult, ScanConfig, ScanSourceStats, UsageAdapter, UsageRecordSink,
-    UsageSource,
+    AdapterError, AdapterResult, ScanConfig, ScanExcludedUsageStats, ScanSourceStats, UsageAdapter,
+    UsageRecordSink, UsageSource,
 };
 pub use context::{ModelVariant, UsageActor, UsageContext};
 pub use cost::{CostInfo, CostSource, UsdNanos};
