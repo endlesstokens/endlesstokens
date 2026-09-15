@@ -38,6 +38,11 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
+      # rust-cache strips files but keeps directories under target/, which
+      # leaves a non-empty advisory DB directory that cargo-audit refuses to clone into.
+      - name: Remove stale advisory database
+        run: rm -rf target/cargo-audit-db
+
       - name: Install Rust components
         run: rustup component add --toolchain 1.95.0 rustfmt clippy llvm-tools-preview
 
